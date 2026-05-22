@@ -31,12 +31,15 @@ stages:
     displayName: Create Resource Group, ACR and AKS
 
     steps:
-    
+
     - task: AzureCLI@2
+      displayName: Verify Azure Subscription
+
       inputs:
         azureSubscription: Abhishek
         scriptType: bash
         scriptLocation: inlineScript
+
         inlineScript: |
 
           az account show
@@ -66,25 +69,56 @@ stages:
 
           echo "Creating AKS Cluster"
 
-          az aks create \
-            --resource-group $(resourceGroup) \
-            --name $(aksName) \
-            --node-count 1 \
-            --enable-cluster-autoscaler \
-            --min-count 1 \
-            --max-count 2 \
-            --generate-ssh-keys \
-            --attach-acr $(acrName) \
-            --node-vm-size Standard_D2as_v5
+            az aks create \
+              --resource-group $(resourceGroup) \
+              --name $(aksName) \
+              --node-count 1 \
+              --enable-cluster-autoscaler \
+              --min-count 1 \
+              --max-count 2 \
+              --generate-ssh-keys \
+              --node-vm-size Standard_D2as_v5
 
 # =========================================================
-# STAGE 2 - BUILD AND PUSH DOCKER IMAGE
+# STAGE 2 - APPROVAL BEFORE BUILD
+# =========================================================
+
+- stage: ApprovalBeforeBuild
+  displayName: Approval Before Docker Build
+
+  dependsOn: CreateInfrastructure
+
+  jobs:
+
+  - job: WaitForApproval
+    displayName: Manual Approval Before Build
+    pool: server
+
+    steps:
+
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+
+      inputs:
+        notifyUsers: ''
+        instructions: |
+          Please validate:
+          - Resource Group created successfully
+          - ACR created successfully
+          - AKS cluster created successfully
+
+          Approve to continue Docker image build and push.
+
+        onTimeout: reject
+
+# =========================================================
+# STAGE 3 - BUILD AND PUSH DOCKER IMAGE
 # =========================================================
 
 - stage: BuildAndPush
   displayName: Build and Push Docker Image
 
-  dependsOn: CreateInfrastructure
+  dependsOn: ApprovalBeforeBuild
 
   jobs:
 
@@ -132,13 +166,45 @@ stages:
       displayName: Push Docker Image to ACR
 
 # =========================================================
-# STAGE 3 - DEPLOY APPLICATION TO AKS
+# STAGE 4 - APPROVAL BEFORE DEPLOYMENT
+# =========================================================
+
+- stage: ApprovalBeforeDeployment
+  displayName: Approval Before AKS Deployment
+
+  dependsOn: BuildAndPush
+
+  jobs:
+
+  - job: WaitForDeploymentApproval
+    displayName: Manual Approval Before Deployment
+    pool: server
+
+    steps:
+
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+
+      inputs:
+        notifyUsers: ''
+        instructions: |
+          Please validate:
+          - Docker image built successfully
+          - Docker image pushed to ACR
+          - ACR repository contains latest image
+
+          Approve to continue AKS deployment.
+
+        onTimeout: reject
+
+# =========================================================
+# STAGE 5 - DEPLOY APPLICATION TO AKS
 # =========================================================
 
 - stage: DeployToAKS
   displayName: Deploy Application to AKS
 
-  dependsOn: BuildAndPush
+  dependsOn: ApprovalBeforeDeployment
 
   jobs:
 
@@ -189,3 +255,36 @@ stages:
           echo "Checking Services"
 
           kubectl get svc
+
+# =========================================================
+# STAGE 6 - FINAL APPROVAL / VALIDATION
+# =========================================================
+
+- stage: FinalValidation
+  displayName: Final Validation Approval
+
+  dependsOn: DeployToAKS
+
+  jobs:
+
+  - job: FinalApproval
+    displayName: Validate Deployment
+    pool: server
+
+    steps:
+
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+
+      inputs:
+        notifyUsers: ''
+        instructions: |
+          Please validate:
+          - Pods are running successfully
+          - Service external IP is accessible
+          - Application is reachable
+          - AKS deployment completed successfully
+
+          Approve to complete pipeline.
+
+        onTimeout: reject
