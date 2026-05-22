@@ -127,7 +127,7 @@ stages:
       displayName: AKS Deployment
 
       inputs:
-        azureSubscription: aks-devops-connection
+        azureSubscription: Abhishek
         scriptType: bash
         scriptLocation: inlineScript
 
