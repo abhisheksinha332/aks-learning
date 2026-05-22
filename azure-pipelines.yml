@@ -1,0 +1,151 @@
+trigger:
+- master
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  resourceGroup: rg-aks-learning
+  location: westeurope
+
+  acrName: akslearningacr56789
+  aksName: aks-learning-cluster
+
+  imageName: aks-demo
+  imageTag: v1
+
+stages:
+
+# ==========================================
+# STAGE 1 - CREATE AZURE INFRA
+# ==========================================
+
+- stage: CreateInfrastructure
+
+  jobs:
+
+  - job: CreateInfra
+
+    steps:
+
+    - task: AzureCLI@2
+      displayName: Create AKS Infrastructure
+
+      inputs:
+        azureSubscription: aks-devops-connection
+        scriptType: bash
+        scriptLocation: inlineScript
+
+        inlineScript: |
+
+          echo "Creating Resource Group"
+
+          az group create \
+            --name $(resourceGroup) \
+            --location $(location)
+
+          echo "Creating ACR"
+
+          az acr create \
+            --resource-group $(resourceGroup) \
+            --name $(acrName) \
+            --sku Basic
+
+          echo "Creating AKS"
+
+          az aks create \
+            --resource-group $(resourceGroup) \
+            --name $(aksName) \
+            --node-count 1 \
+            --enable-cluster-autoscaler \
+            --min-count 1 \
+            --max-count 2 \
+            --generate-ssh-keys \
+            --attach-acr $(acrName) \
+            --node-vm-size Standard_D2as_v5
+
+# ==========================================
+# STAGE 2 - BUILD AND PUSH IMAGE
+# ==========================================
+
+- stage: BuildAndPush
+
+  dependsOn: CreateInfrastructure
+
+  jobs:
+
+  - job: DockerBuild
+
+    steps:
+
+    - task: Docker@2
+      displayName: Build Docker Image
+
+      inputs:
+        command: build
+        Dockerfile: app/Dockerfile
+        repository: $(imageName)
+        tags: |
+          $(imageTag)
+
+    - task: AzureCLI@2
+      displayName: ACR Login
+
+      inputs:
+        azureSubscription: aks-devops-connection
+        scriptType: bash
+        scriptLocation: inlineScript
+
+        inlineScript: |
+
+          az acr login --name $(acrName)
+
+    - script: |
+        docker tag $(imageName):$(imageTag) \
+        $(acrName).azurecr.io/$(imageName):$(imageTag)
+
+        docker push \
+        $(acrName).azurecr.io/$(imageName):$(imageTag)
+
+      displayName: Push Docker Image
+
+# ==========================================
+# STAGE 3 - DEPLOY TO AKS
+# ==========================================
+
+- stage: DeployToAKS
+
+  dependsOn: BuildAndPush
+
+  jobs:
+
+  - job: Deploy
+
+    steps:
+
+    - task: AzureCLI@2
+      displayName: AKS Deployment
+
+      inputs:
+        azureSubscription: aks-devops-connection
+        scriptType: bash
+        scriptLocation: inlineScript
+
+        inlineScript: |
+
+          az aks get-credentials \
+            --resource-group $(resourceGroup) \
+            --name $(aksName) \
+            --overwrite-existing
+
+          IMAGE=$(acrName).azurecr.io/$(imageName):$(imageTag)
+
+          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml
+
+          kubectl apply -f k8s/deployment.yaml
+
+          kubectl apply -f k8s/service.yaml
+
+          kubectl get pods
+
+          kubectl get svc
